@@ -77,7 +77,7 @@ export function getDefaultLines(): Line[] {
       name: "Path 1",
       endPoint: { x: 56, y: 36, heading: "linear", startDeg: 90, endDeg: 180 },
       controlPoints: [],
-      color: getRandomColor(),
+      color: "#ffc516",
       locked: false,
       waitBeforeMs: 0,
       waitAfterMs: 0,
