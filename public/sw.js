@@ -1,4 +1,4 @@
-const VERSION = "v7";
+const VERSION = "v8";
 const CACHE_NAME = `pedro-visualizer-${VERSION}`;
 
 const APP_STATIC_RESOURCES = [
@@ -41,19 +41,6 @@ self.addEventListener("activate", (event) => {
         }),
       );
       await clients.claim();
-
-      const windowClients = await clients.matchAll({
-        type: "window",
-        includeUncontrolled: true,
-      });
-      await Promise.all(
-        windowClients.map((client) => {
-          if ("navigate" in client) {
-            return client.navigate(client.url);
-          }
-          return undefined;
-        }),
-      );
     })(),
   );
 });
