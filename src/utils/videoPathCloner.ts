@@ -29,6 +29,10 @@ export interface TrackingTemplateSample {
 export interface TrackingTemplate {
   size: number;
   halfSize: number;
+  width: number;
+  height: number;
+  halfWidth: number;
+  halfHeight: number;
   sampleStep: number;
   samples: TrackingTemplateSample[];
   lumaSq: number;
@@ -215,7 +219,8 @@ function sampleTemplateFeatures(imageData: ImageData, x: number, y: number) {
 }
 
 function makeTemplateFromSamples(
-  size: number,
+  width: number,
+  height: number,
   sampleStep: number,
   rawSamples: Array<Omit<TrackingTemplateSample, "lumaDev"> & { luma: number }>,
 ): TrackingTemplate {
@@ -237,8 +242,12 @@ function makeTemplateFromSamples(
   );
 
   return {
-    size,
-    halfSize: size / 2,
+    size: Math.max(width, height),
+    halfSize: Math.max(width, height) / 2,
+    width,
+    height,
+    halfWidth: width / 2,
+    halfHeight: height / 2,
     sampleStep,
     samples,
     lumaSq,
@@ -248,12 +257,23 @@ function makeTemplateFromSamples(
 export function createTrackingTemplate(
   imageData: ImageData,
   point: PixelPoint,
-  options: { size?: number; sampleStep?: number } = {},
+  options: { size?: number; width?: number; height?: number; sampleStep?: number } = {},
 ): TrackingTemplate {
-  const size = clamp(Math.round(options.size || 56), 24, 140);
-  const halfSize = size / 2;
+  const width = clamp(
+    Math.round(options.width || options.size || 56),
+    16,
+    Math.max(16, imageData.width),
+  );
+  const height = clamp(
+    Math.round(options.height || options.size || 56),
+    16,
+    Math.max(16, imageData.height),
+  );
+  const halfWidth = width / 2;
+  const halfHeight = height / 2;
+  const maxDimension = Math.max(width, height);
   const sampleStep = clamp(
-    Math.round(options.sampleStep || Math.max(3, size / 16)),
+    Math.round(options.sampleStep || Math.max(3, maxDimension / 18)),
     3,
     8,
   );
@@ -261,8 +281,8 @@ export function createTrackingTemplate(
     Omit<TrackingTemplateSample, "lumaDev"> & { luma: number }
   > = [];
 
-  for (let dy = -halfSize; dy <= halfSize; dy += sampleStep) {
-    for (let dx = -halfSize; dx <= halfSize; dx += sampleStep) {
+  for (let dy = -halfHeight; dy <= halfHeight; dy += sampleStep) {
+    for (let dx = -halfWidth; dx <= halfWidth; dx += sampleStep) {
       rawSamples.push({
         dx,
         dy,
@@ -271,7 +291,45 @@ export function createTrackingTemplate(
     }
   }
 
-  return makeTemplateFromSamples(size, sampleStep, rawSamples);
+  return makeTemplateFromSamples(width, height, sampleStep, rawSamples);
+}
+
+export function createTrackingTemplateFromBox(
+  imageData: ImageData,
+  box: { x: number; y: number; width: number; height: number },
+  options: { sampleStep?: number } = {},
+): { point: PixelPoint; template: TrackingTemplate } {
+  const minWidth = 16;
+  const minHeight = 16;
+  const width = clamp(Math.round(Math.abs(box.width)), minWidth, imageData.width);
+  const height = clamp(
+    Math.round(Math.abs(box.height)),
+    minHeight,
+    imageData.height,
+  );
+  const left = clamp(
+    Math.min(box.x, box.x + box.width),
+    0,
+    Math.max(0, imageData.width - width),
+  );
+  const top = clamp(
+    Math.min(box.y, box.y + box.height),
+    0,
+    Math.max(0, imageData.height - height),
+  );
+  const point = {
+    x: left + width / 2,
+    y: top + height / 2,
+  };
+
+  return {
+    point,
+    template: createTrackingTemplate(imageData, point, {
+      width,
+      height,
+      sampleStep: options.sampleStep,
+    }),
+  };
 }
 
 function scoreTemplateAt(
@@ -332,26 +390,27 @@ export function trackTemplateCenter(
   const weights = {
     colorWeight: settings.colorWeight ?? 0.14,
   };
-  const margin = template.halfSize + 1;
+  const marginX = template.halfWidth + 1;
+  const marginY = template.halfHeight + 1;
   const minX = clamp(
     previousPoint.x - radius,
-    margin,
-    imageData.width - margin,
+    marginX,
+    imageData.width - marginX,
   );
   const maxX = clamp(
     previousPoint.x + radius,
-    margin,
-    imageData.width - margin,
+    marginX,
+    imageData.width - marginX,
   );
   const minY = clamp(
     previousPoint.y - radius,
-    margin,
-    imageData.height - margin,
+    marginY,
+    imageData.height - marginY,
   );
   const maxY = clamp(
     previousPoint.y + radius,
-    margin,
-    imageData.height - margin,
+    marginY,
+    imageData.height - marginY,
   );
 
   let bestPoint: PixelPoint | null = null;
@@ -377,23 +436,23 @@ export function trackTemplateCenter(
   if (bestPoint && coarseStep > 1) {
     const refineMinX = clamp(
       bestPoint.x - coarseStep,
-      margin,
-      imageData.width - margin,
+      marginX,
+      imageData.width - marginX,
     );
     const refineMaxX = clamp(
       bestPoint.x + coarseStep,
-      margin,
-      imageData.width - margin,
+      marginX,
+      imageData.width - marginX,
     );
     const refineMinY = clamp(
       bestPoint.y - coarseStep,
-      margin,
-      imageData.height - margin,
+      marginY,
+      imageData.height - marginY,
     );
     const refineMaxY = clamp(
       bestPoint.y + coarseStep,
-      margin,
-      imageData.height - margin,
+      marginY,
+      imageData.height - marginY,
     );
 
     for (let y = refineMinY; y <= refineMaxY; y += 1) {
@@ -417,7 +476,8 @@ export function updateTrackingTemplate(
   adaptRate = 0.08,
 ): TrackingTemplate {
   const next = createTrackingTemplate(imageData, point, {
-    size: template.size,
+    width: template.width,
+    height: template.height,
     sampleStep: template.sampleStep,
   });
   const rate = clamp(adaptRate, 0, 0.35);

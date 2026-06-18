@@ -5,6 +5,7 @@
     applyHomography,
     buildVideoClonePath,
     createTrackingTemplate,
+    createTrackingTemplateFromBox,
     prepareTracePoints,
     samplePixelColor,
     solveHomography,
@@ -33,6 +34,9 @@
   let robotPixel: PixelPoint | null = null;
   let targetColor: RgbColor | null = null;
   let robotTemplate: TrackingTemplate | null = null;
+  let robotSelectionStart: PixelPoint | null = null;
+  let robotSelectionEnd: PixelPoint | null = null;
+  let suppressNextClick = false;
   let tracedSamples: TraceSample[] = [];
   let preparedPoints: BasePoint[] = [];
   let tracing = false;
@@ -83,23 +87,92 @@
     robotPixel = null;
     targetColor = null;
     robotTemplate = null;
+    robotSelectionStart = null;
+    robotSelectionEnd = null;
     trackingScore = 0;
     resetTrace();
     statusText = "Calibration cleared";
   }
 
   function refreshRobotTemplate() {
-    if (!canvasEl || !robotPixel) return;
+    if (!canvasEl || !robotPixel || !robotTemplate) return;
     const ctx = canvasEl.getContext("2d", { willReadFrequently: true });
     if (!ctx) return;
     const imageData = ctx.getImageData(0, 0, canvasEl.width, canvasEl.height);
     robotTemplate = createTrackingTemplate(imageData, robotPixel, {
-      size: templateSize,
+      width: robotTemplate.width || robotTemplate.size,
+      height: robotTemplate.height || robotTemplate.size,
     });
     targetColor = samplePixelColor(imageData, robotPixel);
     trackingScore = 100;
     resetTrace();
     statusText = "Robot template updated";
+    drawFrame();
+  }
+
+  function normalizedSelectionBox() {
+    if (!robotSelectionStart || !robotSelectionEnd) return null;
+    const left = Math.min(robotSelectionStart.x, robotSelectionEnd.x);
+    const top = Math.min(robotSelectionStart.y, robotSelectionEnd.y);
+    const width = Math.abs(robotSelectionEnd.x - robotSelectionStart.x);
+    const height = Math.abs(robotSelectionEnd.y - robotSelectionStart.y);
+    return { x: left, y: top, width, height };
+  }
+
+  function captureRobotTemplateFromBox(box: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }) {
+    if (!canvasEl) return;
+    const ctx = canvasEl.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return;
+    const imageData = ctx.getImageData(0, 0, canvasEl.width, canvasEl.height);
+    const { point, template } = createTrackingTemplateFromBox(imageData, box);
+    robotPixel = point;
+    robotTemplate = template;
+    targetColor = samplePixelColor(imageData, point);
+    templateSize = Math.round(Math.max(template.width, template.height));
+    trackingScore = 100;
+    resetTrace();
+    statusText = `Robot box ${Math.round(template.width)}x${Math.round(
+      template.height,
+    )} px`;
+    drawFrame();
+  }
+
+  function handleCanvasMouseDown(event: MouseEvent) {
+    if (mode !== "robot") return;
+    const point = getCanvasPoint(event);
+    if (!point) return;
+    robotSelectionStart = point;
+    robotSelectionEnd = point;
+    drawFrame();
+  }
+
+  function handleCanvasMouseMove(event: MouseEvent) {
+    if (mode !== "robot" || !robotSelectionStart) return;
+    const point = getCanvasPoint(event);
+    if (!point) return;
+    robotSelectionEnd = point;
+    drawFrame();
+  }
+
+  function handleCanvasMouseUp(event: MouseEvent) {
+    if (mode !== "robot" || !robotSelectionStart) return;
+    const point = getCanvasPoint(event);
+    if (point) robotSelectionEnd = point;
+    const box = normalizedSelectionBox();
+    robotSelectionStart = null;
+    robotSelectionEnd = null;
+
+    if (box && box.width >= 12 && box.height >= 12) {
+      suppressNextClick = true;
+      captureRobotTemplateFromBox(box);
+      return;
+    }
+
     drawFrame();
   }
 
@@ -137,6 +210,10 @@
   }
 
   function handleCanvasClick(event: MouseEvent) {
+    if (suppressNextClick) {
+      suppressNextClick = false;
+      return;
+    }
     const point = getCanvasPoint(event);
     if (!point || !canvasEl) return;
 
@@ -169,7 +246,7 @@
       robotPixel = point;
       trackingScore = 100;
       resetTrace();
-      statusText = "Robot template picked";
+      statusText = "Robot center picked";
       drawFrame();
       return;
     }
@@ -243,13 +320,31 @@
   }
 
   function drawTrackerBox(ctx: CanvasRenderingContext2D, point: PixelPoint) {
-    const boxSize = robotTemplate?.size || templateSize;
-    const half = boxSize / 2;
+    const boxWidth = robotTemplate?.width || robotTemplate?.size || templateSize;
+    const boxHeight =
+      robotTemplate?.height || robotTemplate?.size || templateSize;
     ctx.save();
     ctx.strokeStyle = "#fb7185";
     ctx.lineWidth = 3;
     ctx.setLineDash([8, 6]);
-    ctx.strokeRect(point.x - half, point.y - half, boxSize, boxSize);
+    ctx.strokeRect(
+      point.x - boxWidth / 2,
+      point.y - boxHeight / 2,
+      boxWidth,
+      boxHeight,
+    );
+    ctx.restore();
+  }
+
+  function drawSelectionBox(ctx: CanvasRenderingContext2D) {
+    const box = normalizedSelectionBox();
+    if (!box || box.width < 1 || box.height < 1) return;
+    ctx.save();
+    ctx.strokeStyle = "#f43f5e";
+    ctx.fillStyle = "rgba(244, 63, 94, 0.12)";
+    ctx.lineWidth = 3;
+    ctx.fillRect(box.x, box.y, box.width, box.height);
+    ctx.strokeRect(box.x, box.y, box.width, box.height);
     ctx.restore();
   }
 
@@ -304,6 +399,8 @@
       drawTrackerBox(ctx, robotPixel);
       drawPoint(ctx, robotPixel, "R", "#fb7185");
     }
+
+    drawSelectionBox(ctx);
   }
 
   function handleVideoFile(event: Event) {
@@ -321,6 +418,8 @@
     robotPixel = null;
     targetColor = null;
     robotTemplate = null;
+    robotSelectionStart = null;
+    robotSelectionEnd = null;
     trackingScore = 0;
     tracedSamples = [];
     preparedPoints = [];
@@ -430,7 +529,7 @@
           trackingScore = Math.round(templateMatch.score * 100);
         }
 
-        if (!centroid && targetColor) {
+        if (!centroid && !activeTemplate && targetColor) {
           centroid = trackColorCentroid(imageData, targetColor, lastPixel, {
             tolerance,
             minBlobPixels,
@@ -439,7 +538,7 @@
           trackingScore = centroid ? 0 : trackingScore;
         }
 
-        if (!centroid && lastPixel && targetColor) {
+        if (!centroid && !activeTemplate && lastPixel && targetColor) {
           centroid = trackColorCentroid(imageData, targetColor, null, {
             tolerance,
             minBlobPixels,
@@ -528,6 +627,10 @@
             <canvas
               bind:this={canvasEl}
               on:click={handleCanvasClick}
+              on:mousedown={handleCanvasMouseDown}
+              on:mousemove={handleCanvasMouseMove}
+              on:mouseup={handleCanvasMouseUp}
+              on:mouseleave={handleCanvasMouseUp}
               class="block w-full max-h-[68vh] object-contain cursor-crosshair"
             />
             <video
@@ -581,7 +684,10 @@
               Corners
             </button>
             <button
-              on:click={() => (mode = "robot")}
+              on:click={() => {
+                mode = "robot";
+                statusText = "Drag robot box";
+              }}
               class:bg-rose-500={mode === "robot"}
               class:text-white={mode === "robot"}
               class="px-2 py-2 rounded-md text-xs font-semibold border border-neutral-300 dark:border-neutral-700"
@@ -620,7 +726,10 @@
             </div>
             {#if robotTemplate}
               <div class="flex items-center justify-between text-xs text-neutral-500 dark:text-neutral-400">
-                <span>Template {robotTemplate.size}px</span>
+                <span>
+                  Box {Math.round(robotTemplate.width)}x{Math.round(robotTemplate.height)}
+                  px
+                </span>
                 <span>{trackingScore}% match</span>
               </div>
             {/if}
