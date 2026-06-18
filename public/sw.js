@@ -1,19 +1,19 @@
-const VERSION = "v2";
+const VERSION = "v3";
 const CACHE_NAME = `pedro-visualizer-${VERSION}`;
 
 const APP_STATIC_RESOURCES = [
-  "/",
-  "/favicon.ico",
-  "/fields/centerstage.webp",
-  "/fields/intothedeep.webp",
-  "/fields/decode.webp",
-  "/robot.png",
-  "/assets/index.js",
-  "/assets/index.css",
-  "/fonts/Poppins-Regular.ttf",
-  "/fonts/Poppins-SemiBold.ttf",
-  "/fonts/Poppins-Light.ttf",
-  "/fonts/Poppins-ExtraLight.ttf",
+  "./",
+  "./favicon.ico",
+  "./fields/centerstage.webp",
+  "./fields/intothedeep.webp",
+  "./fields/decode.webp",
+  "./robot.png",
+  "./assets/index.js",
+  "./assets/index.css",
+  "./fonts/Poppins-Regular.ttf",
+  "./fonts/Poppins-SemiBold.ttf",
+  "./fonts/Poppins-Light.ttf",
+  "./fonts/Poppins-ExtraLight.ttf",
 ];
 
 // On install, cache the static resources
@@ -57,7 +57,7 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE_NAME);
-      const cachedResponse = await cache.match(event.request.url);
+      const cachedResponse = await cache.match(event.request);
       if (cachedResponse) {
         // Return the cached response if it's available.
         return cachedResponse;
