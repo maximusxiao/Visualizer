@@ -24,11 +24,6 @@
 
   let videoEl: HTMLVideoElement | null = null;
   let canvasEl: HTMLCanvasElement | null = null;
-  let previewBoxEl: HTMLDivElement | null = null;
-  let previewBoxWidth = 0;
-  let previewBoxHeight = 0;
-  let videoPixelWidth = 960;
-  let videoPixelHeight = 540;
   let videoUrl = "";
   let videoName = "";
   let duration = 0;
@@ -67,19 +62,6 @@
       (robotTemplate || targetColor),
   );
   $: canImport = preparedPoints.length >= 2;
-  $: previewScale = Math.min(
-    Math.max(1, previewBoxWidth - 16) / Math.max(1, videoPixelWidth),
-    Math.max(1, previewBoxHeight - 16) / Math.max(1, videoPixelHeight),
-    1,
-  );
-  $: canvasDisplayWidth = Math.max(
-    1,
-    Math.round(videoPixelWidth * previewScale),
-  );
-  $: canvasDisplayHeight = Math.max(
-    1,
-    Math.round(videoPixelHeight * previewScale),
-  );
 
   onDestroy(() => {
     if (videoUrl) URL.revokeObjectURL(videoUrl);
@@ -279,8 +261,6 @@
     const hasVideo = Boolean(videoEl?.videoWidth && videoEl?.videoHeight);
     const width = hasVideo ? videoEl!.videoWidth : 960;
     const height = hasVideo ? videoEl!.videoHeight : 540;
-    videoPixelWidth = width;
-    videoPixelHeight = height;
 
     if (canvasEl.width !== width) canvasEl.width = width;
     if (canvasEl.height !== height) canvasEl.height = height;
@@ -356,8 +336,6 @@
   function handleLoadedMetadata() {
     if (!videoEl) return;
     duration = Number.isFinite(videoEl.duration) ? videoEl.duration : 0;
-    videoPixelWidth = videoEl.videoWidth || 960;
-    videoPixelHeight = videoEl.videoHeight || 540;
     currentTime = 0;
     statusText = "Pick field corners";
     drawFrame();
@@ -517,7 +495,7 @@
     aria-label="Clone auto from video"
   >
     <div
-      class="flex h-[min(94vh,980px)] w-[min(98vw,1500px)] flex-col overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
+      class="flex flex-col bg-white dark:bg-neutral-900 rounded-lg w-[min(96vw,1180px)] max-h-[92vh] shadow-xl border border-neutral-200 dark:border-neutral-700 overflow-hidden"
     >
       <div class="flex items-center justify-between px-4 py-3 border-b border-neutral-200 dark:border-neutral-700">
         <div class="flex flex-col">
@@ -544,19 +522,13 @@
         </button>
       </div>
 
-      <div class="grid min-h-0 flex-1 grid-cols-1 gap-0 overflow-hidden lg:grid-cols-[minmax(0,1fr)_21rem]">
-        <div class="min-h-0 bg-neutral-100 p-4 dark:bg-neutral-950">
-          <div
-            bind:this={previewBoxEl}
-            bind:clientWidth={previewBoxWidth}
-            bind:clientHeight={previewBoxHeight}
-            class="relative flex h-full min-h-[28rem] w-full items-center justify-center overflow-hidden rounded-md border border-neutral-200 bg-neutral-950 p-2 dark:border-neutral-700"
-          >
+      <div class="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_21rem] gap-0 overflow-auto">
+        <div class="p-4 bg-neutral-100 dark:bg-neutral-950">
+          <div class="relative w-full rounded-md overflow-hidden border border-neutral-200 dark:border-neutral-700 bg-neutral-950">
             <canvas
               bind:this={canvasEl}
               on:click={handleCanvasClick}
-              class="block cursor-crosshair rounded-sm"
-              style="width: {canvasDisplayWidth}px; height: {canvasDisplayHeight}px;"
+              class="block w-full max-h-[68vh] object-contain cursor-crosshair"
             />
             <video
               bind:this={videoEl}
