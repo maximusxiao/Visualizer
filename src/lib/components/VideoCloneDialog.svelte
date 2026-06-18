@@ -49,8 +49,8 @@
   let searchRadius = 90;
   let minBlobPixels = 18;
   let templateSize = 56;
-  let templateMatchPercent = 28;
-  let templateAdaptPercent = 8;
+  let templateMatchPercent = 45;
+  let templateAdaptPercent = 0;
   let minPointDistance = 4;
   let simplifyDistance = 2.2;
   let maxPoints = 20;
@@ -271,11 +271,25 @@
     return prepareTracePoints(
       tracedSamples.map((sample) => sample.field),
       {
-        minDistance,
+        minDistance: minPointDistance,
         simplification: simplifyDistance,
         maxPoints,
       },
     );
+  }
+
+  function pointInPolygon(point: PixelPoint, polygon: PixelPoint[]) {
+    if (polygon.length < 3) return true;
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      const a = polygon[i];
+      const b = polygon[j];
+      const crosses =
+        a.y > point.y !== b.y > point.y &&
+        point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y || 1e-9) + a.x;
+      if (crosses) inside = !inside;
+    }
+    return inside;
   }
 
   function drawPoint(
@@ -497,6 +511,7 @@
     const samples: TraceSample[] = [];
     const restoreTime = currentTime;
     let lastPixel = robotPixel;
+    let velocity = { x: 0, y: 0 };
     let activeTemplate = robotTemplate;
     const secondsPerFrame = Math.max(0.03, frameStepMs / 1000);
     const frameCount = Math.max(1, Math.ceil(duration / secondsPerFrame));
@@ -510,11 +525,19 @@
         ctx.drawImage(videoEl, 0, 0, scratch.width, scratch.height);
         const imageData = ctx.getImageData(0, 0, scratch.width, scratch.height);
         let centroid: PixelPoint | null = null;
+        const predictedPixel = lastPixel
+          ? {
+              x: lastPixel.x + velocity.x,
+              y: lastPixel.y + velocity.y,
+            }
+          : null;
         const templateMatch =
-          activeTemplate && lastPixel
-            ? trackTemplateCenter(imageData, activeTemplate, lastPixel, {
+          activeTemplate && predictedPixel
+            ? trackTemplateCenter(imageData, activeTemplate, predictedPixel, {
                 searchRadius,
                 minScore: templateMatchPercent / 100,
+                candidateFilter: (candidate) =>
+                  pointInPolygon(candidate, cornerPixels),
               })
             : null;
 
@@ -547,6 +570,12 @@
         }
 
         if (centroid) {
+          if (lastPixel) {
+            velocity = {
+              x: velocity.x * 0.35 + (centroid.x - lastPixel.x) * 0.65,
+              y: velocity.y * 0.35 + (centroid.y - lastPixel.y) * 0.65,
+            };
+          }
           lastPixel = centroid;
           samples.push({
             time,

@@ -24,6 +24,7 @@ export interface TrackingTemplateSample {
   lumaDev: number;
   redGreen: number;
   blueLuma: number;
+  weight: number;
 }
 
 export interface TrackingTemplate {
@@ -36,6 +37,7 @@ export interface TrackingTemplate {
   sampleStep: number;
   samples: TrackingTemplateSample[];
   lumaSq: number;
+  totalWeight: number;
 }
 
 export interface TemplateTraceSettings {
@@ -43,6 +45,7 @@ export interface TemplateTraceSettings {
   searchStep?: number;
   minScore?: number;
   colorWeight?: number;
+  candidateFilter?: (point: PixelPoint) => boolean;
 }
 
 export interface TemplateTrackResult {
@@ -204,6 +207,13 @@ function sampleLuma(imageData: ImageData, x: number, y: number) {
   );
 }
 
+function sampleEdge(imageData: ImageData, x: number, y: number) {
+  return (
+    Math.abs(sampleLuma(imageData, x + 2, y) - sampleLuma(imageData, x - 2, y)) +
+    Math.abs(sampleLuma(imageData, x, y + 2) - sampleLuma(imageData, x, y - 2))
+  );
+}
+
 function sampleTemplateFeatures(imageData: ImageData, x: number, y: number) {
   const idx = pixelIndex(imageData, x, y);
   const r = imageData.data[idx];
@@ -222,24 +232,47 @@ function makeTemplateFromSamples(
   width: number,
   height: number,
   sampleStep: number,
-  rawSamples: Array<Omit<TrackingTemplateSample, "lumaDev"> & { luma: number }>,
+  rawSamples: Array<
+    Omit<TrackingTemplateSample, "lumaDev" | "weight"> & {
+      edge: number;
+      luma: number;
+    }
+  >,
 ): TrackingTemplate {
   const meanLuma =
     rawSamples.reduce((sum, sample) => sum + sample.luma, 0) /
     Math.max(1, rawSamples.length);
 
-  const samples = rawSamples.map((sample) => ({
-    dx: sample.dx,
-    dy: sample.dy,
-    lumaDev: sample.luma - meanLuma,
-    redGreen: sample.redGreen,
-    blueLuma: sample.blueLuma,
-  }));
+  const weightedSamples = rawSamples
+    .map((sample) => {
+      const lumaDev = sample.luma - meanLuma;
+      const chroma = Math.hypot(sample.redGreen, sample.blueLuma);
+      const distinctiveness =
+        sample.edge / 42 + Math.abs(lumaDev) / 36 + chroma / 100;
+
+      return {
+        dx: sample.dx,
+        dy: sample.dy,
+        lumaDev,
+        redGreen: sample.redGreen,
+        blueLuma: sample.blueLuma,
+        weight: clamp(distinctiveness, 0.04, 3),
+      };
+    })
+    .sort((a, b) => b.weight - a.weight);
+
+  const filteredSamples = weightedSamples.filter(
+    (sample) => sample.weight >= 0.18,
+  );
+  const samples = (
+    filteredSamples.length >= 24 ? filteredSamples : weightedSamples
+  ).slice(0, 320);
 
   const lumaSq = samples.reduce(
-    (sum, sample) => sum + sample.lumaDev * sample.lumaDev,
+    (sum, sample) => sum + sample.weight * sample.lumaDev * sample.lumaDev,
     0,
   );
+  const totalWeight = samples.reduce((sum, sample) => sum + sample.weight, 0);
 
   return {
     size: Math.max(width, height),
@@ -251,6 +284,7 @@ function makeTemplateFromSamples(
     sampleStep,
     samples,
     lumaSq,
+    totalWeight,
   };
 }
 
@@ -278,15 +312,21 @@ export function createTrackingTemplate(
     8,
   );
   const rawSamples: Array<
-    Omit<TrackingTemplateSample, "lumaDev"> & { luma: number }
+    Omit<TrackingTemplateSample, "lumaDev" | "weight"> & {
+      edge: number;
+      luma: number;
+    }
   > = [];
 
   for (let dy = -halfHeight; dy <= halfHeight; dy += sampleStep) {
     for (let dx = -halfWidth; dx <= halfWidth; dx += sampleStep) {
+      const x = point.x + dx;
+      const y = point.y + dy;
       rawSamples.push({
         dx,
         dy,
-        ...sampleTemplateFeatures(imageData, point.x + dx, point.y + dy),
+        edge: sampleEdge(imageData, x, y),
+        ...sampleTemplateFeatures(imageData, x, y),
       });
     }
   }
@@ -339,13 +379,20 @@ function scoreTemplateAt(
   y: number,
   settings: Required<Pick<TemplateTraceSettings, "colorWeight">>,
 ) {
-  if (template.samples.length === 0 || template.lumaSq < 1) return -Infinity;
+  if (
+    template.samples.length === 0 ||
+    template.lumaSq < 1 ||
+    template.totalWeight < 1
+  ) {
+    return -Infinity;
+  }
 
   let meanLuma = 0;
   template.samples.forEach((sample) => {
-    meanLuma += sampleLuma(imageData, x + sample.dx, y + sample.dy);
+    meanLuma +=
+      sample.weight * sampleLuma(imageData, x + sample.dx, y + sample.dy);
   });
-  meanLuma /= template.samples.length;
+  meanLuma /= template.totalWeight;
 
   let numerator = 0;
   let candidateSq = 0;
@@ -358,11 +405,12 @@ function scoreTemplateAt(
       y + sample.dy,
     );
     const lumaDev = features.luma - meanLuma;
-    numerator += sample.lumaDev * lumaDev;
-    candidateSq += lumaDev * lumaDev;
+    numerator += sample.weight * sample.lumaDev * lumaDev;
+    candidateSq += sample.weight * lumaDev * lumaDev;
     chromaError +=
-      Math.abs(features.redGreen - sample.redGreen) +
-      Math.abs(features.blueLuma - sample.blueLuma);
+      sample.weight *
+      (Math.abs(features.redGreen - sample.redGreen) +
+        Math.abs(features.blueLuma - sample.blueLuma));
   });
 
   if (candidateSq < 1) return -Infinity;
@@ -370,7 +418,7 @@ function scoreTemplateAt(
   const textureScore =
     numerator / Math.sqrt(Math.max(1, template.lumaSq * candidateSq));
   const chromaPenalty = clamp(
-    chromaError / Math.max(1, template.samples.length * 510),
+    chromaError / Math.max(1, template.totalWeight * 510),
     0,
     1,
   );
@@ -417,6 +465,10 @@ export function trackTemplateCenter(
   let bestScore = -Infinity;
 
   const consider = (x: number, y: number) => {
+    if (settings.candidateFilter && !settings.candidateFilter({ x, y })) {
+      return;
+    }
+
     const distancePenalty =
       (Math.hypot(x - previousPoint.x, y - previousPoint.y) / radius) * 0.035;
     const score =
@@ -489,6 +541,7 @@ export function updateTrackingTemplate(
       lumaDev: sample.lumaDev * (1 - rate) + fresh.lumaDev * rate,
       redGreen: sample.redGreen * (1 - rate) + fresh.redGreen * rate,
       blueLuma: sample.blueLuma * (1 - rate) + fresh.blueLuma * rate,
+      weight: sample.weight * (1 - rate) + fresh.weight * rate,
     };
   });
 
@@ -496,9 +549,10 @@ export function updateTrackingTemplate(
     ...template,
     samples,
     lumaSq: samples.reduce(
-      (sum, sample) => sum + sample.lumaDev * sample.lumaDev,
+      (sum, sample) => sum + sample.weight * sample.lumaDev * sample.lumaDev,
       0,
     ),
+    totalWeight: samples.reduce((sum, sample) => sum + sample.weight, 0),
   };
 }
 

@@ -1,4 +1,4 @@
-const VERSION = "v9";
+const VERSION = "v10";
 const CACHE_NAME = `pedro-visualizer-${VERSION}`;
 
 const APP_STATIC_RESOURCES = [
