@@ -20,6 +20,11 @@
 
   let videoEl: HTMLVideoElement | null = null;
   let canvasEl: HTMLCanvasElement | null = null;
+  let previewBoxEl: HTMLDivElement | null = null;
+  let previewBoxWidth = 0;
+  let previewBoxHeight = 0;
+  let videoPixelWidth = 960;
+  let videoPixelHeight = 540;
   let videoUrl = "";
   let videoName = "";
   let duration = 0;
@@ -50,6 +55,19 @@
     videoEl && duration > 0 && cornerPixels.length === 4 && targetColor,
   );
   $: canImport = preparedPoints.length >= 2;
+  $: previewScale = Math.min(
+    Math.max(1, previewBoxWidth - 16) / Math.max(1, videoPixelWidth),
+    Math.max(1, previewBoxHeight - 16) / Math.max(1, videoPixelHeight),
+    1,
+  );
+  $: canvasDisplayWidth = Math.max(
+    1,
+    Math.round(videoPixelWidth * previewScale),
+  );
+  $: canvasDisplayHeight = Math.max(
+    1,
+    Math.round(videoPixelHeight * previewScale),
+  );
 
   onDestroy(() => {
     if (videoUrl) URL.revokeObjectURL(videoUrl);
@@ -217,6 +235,8 @@
     const hasVideo = Boolean(videoEl?.videoWidth && videoEl?.videoHeight);
     const width = hasVideo ? videoEl!.videoWidth : 960;
     const height = hasVideo ? videoEl!.videoHeight : 540;
+    videoPixelWidth = width;
+    videoPixelHeight = height;
 
     if (canvasEl.width !== width) canvasEl.width = width;
     if (canvasEl.height !== height) canvasEl.height = height;
@@ -289,6 +309,8 @@
   function handleLoadedMetadata() {
     if (!videoEl) return;
     duration = Number.isFinite(videoEl.duration) ? videoEl.duration : 0;
+    videoPixelWidth = videoEl.videoWidth || 960;
+    videoPixelHeight = videoEl.videoHeight || 540;
     currentTime = 0;
     statusText = "Pick field corners";
     drawFrame();
@@ -449,12 +471,18 @@
       </div>
 
       <div class="grid min-h-0 flex-1 grid-cols-1 gap-0 overflow-hidden lg:grid-cols-[minmax(0,1fr)_21rem]">
-        <div class="min-h-0 overflow-auto bg-neutral-100 p-4 dark:bg-neutral-950">
-          <div class="relative flex min-h-[28rem] w-full items-center justify-center overflow-auto rounded-md border border-neutral-200 bg-neutral-950 p-2 dark:border-neutral-700">
+        <div class="min-h-0 bg-neutral-100 p-4 dark:bg-neutral-950">
+          <div
+            bind:this={previewBoxEl}
+            bind:clientWidth={previewBoxWidth}
+            bind:clientHeight={previewBoxHeight}
+            class="relative flex h-full min-h-[28rem] w-full items-center justify-center overflow-hidden rounded-md border border-neutral-200 bg-neutral-950 p-2 dark:border-neutral-700"
+          >
             <canvas
               bind:this={canvasEl}
               on:click={handleCanvasClick}
-              class="block h-auto max-h-[calc(94vh-8rem)] max-w-full cursor-crosshair"
+              class="block cursor-crosshair rounded-sm"
+              style="width: {canvasDisplayWidth}px; height: {canvasDisplayHeight}px;"
             />
             <video
               bind:this={videoEl}
