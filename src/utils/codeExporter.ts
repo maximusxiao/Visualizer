@@ -1,5 +1,5 @@
 import prettier from "prettier";
-import type { Point, Line, BasePoint, PathChain } from "../types";
+import type { Point, Line, BasePoint, PathChain, SequenceItem } from "../types";
 import { getCurvePoint } from "./math";
 
 // Lazy-load Prettier's Java plugin; fall back gracefully if unavailable
@@ -23,7 +23,10 @@ async function loadJavaPlugin() {
 /**
  * Generate Java code from path data
  */
-function sanitizeIdentifier(input: string | undefined, fallback: string): string {
+function sanitizeIdentifier(
+  input: string | undefined,
+  fallback: string,
+): string {
   const cleaned = (input || "").replace(/[^a-zA-Z0-9]/g, "");
   if (!cleaned) return fallback;
   if (/^[0-9]/.test(cleaned)) return `${fallback}${cleaned}`;
@@ -41,7 +44,8 @@ function buildPathSegmentCode(line: Line, startExpression: string): string {
     .map((point) => `new Pose(${point.x.toFixed(3)}, ${point.y.toFixed(3)})`)
     .join(",\n            ");
 
-  const curveType = line.controlPoints.length === 0 ? "BezierLine" : "BezierCurve";
+  const curveType =
+    line.controlPoints.length === 0 ? "BezierLine" : "BezierCurve";
 
   const allPoints = controlPoints
     ? `${startExpression},\n            ${controlPoints},\n            new Pose(${line.endPoint.x.toFixed(3)}, ${line.endPoint.y.toFixed(3)})`
@@ -54,7 +58,9 @@ function buildPathSegmentCode(line: Line, startExpression: string): string {
         ? `Math.toRadians(${line.endPoint.startDeg ?? 0}), Math.toRadians(${line.endPoint.endDeg ?? 0})`
         : "";
 
-  const reverseConfig = line.endPoint.reverse ? "\n          .setReversed()" : "";
+  const reverseConfig = line.endPoint.reverse
+    ? "\n          .setReversed()"
+    : "";
 
   return `.addPath(
             new ${curveType}(
@@ -97,14 +103,20 @@ export async function generateJavaCode(
 
   const fieldDeclarations = normalizedChains
     .map((chain, idx) => {
-      const variableName = sanitizeIdentifier(chain.name, `pathChain${idx + 1}`);
+      const variableName = sanitizeIdentifier(
+        chain.name,
+        `pathChain${idx + 1}`,
+      );
       return `public PathChain ${variableName};`;
     })
     .join("\n    ");
 
   const pathAssignments = normalizedChains
     .map((chain, chainIdx) => {
-      const variableName = sanitizeIdentifier(chain.name, `pathChain${chainIdx + 1}`);
+      const variableName = sanitizeIdentifier(
+        chain.name,
+        `pathChain${chainIdx + 1}`,
+      );
 
       const segmentSnippets = chain.lineIds
         .map((lineId) => {
@@ -213,6 +225,234 @@ public class PedroAutonomous extends OpMode {
     console.error("Code formatting error:", error);
     return file;
   }
+}
+
+export interface KotlinExportOptions {
+  className?: string;
+  packageName?: string;
+  opModeName?: string;
+  mirrorPoses?: boolean;
+}
+
+function formatKotlinNumber(value: number | undefined, fallback = 0): string {
+  const num = Number.isFinite(value) ? Number(value) : fallback;
+  return num.toFixed(3);
+}
+
+function sanitizeKotlinIdentifier(
+  input: string | undefined,
+  fallback: string,
+): string {
+  const raw = sanitizeIdentifier(input, fallback);
+  const normalized = raw[0].toLowerCase() + raw.slice(1);
+  return /^[0-9]/.test(normalized) ? `${fallback}${normalized}` : normalized;
+}
+
+function sanitizeKotlinClassName(
+  input: string | undefined,
+  fallback: string,
+): string {
+  const raw = sanitizeIdentifier(input, fallback);
+  const normalized = raw[0].toUpperCase() + raw.slice(1);
+  return /^[0-9]/.test(normalized) ? `${fallback}${normalized}` : normalized;
+}
+
+function pointHeadingDegrees(point: Point, position: "start" | "end"): number {
+  if (point.heading === "linear") {
+    return position === "start" ? point.startDeg : point.endDeg;
+  }
+  if (point.heading === "constant") {
+    return point.degrees;
+  }
+  return 0;
+}
+
+function kotlinPoseExpression(
+  point: BasePoint,
+  options: KotlinExportOptions,
+  headingDegrees?: number,
+): string {
+  const values = [formatKotlinNumber(point.x), formatKotlinNumber(point.y)];
+  if (typeof headingDegrees === "number") {
+    values.push(`Math.toRadians(${formatKotlinNumber(headingDegrees, 0)})`);
+  }
+  return `Pose(${values.join(", ")})${options.mirrorPoses ? ".mirror()" : ""}`;
+}
+
+function buildKotlinPathSegmentCode(
+  line: Line,
+  startExpression: string,
+  options: KotlinExportOptions,
+): string {
+  const headingTypeToFunctionName = {
+    constant: "setConstantHeadingInterpolation",
+    linear: "setLinearHeadingInterpolation",
+    tangential: "setTangentHeadingInterpolation",
+  };
+
+  const controlPoints = line.controlPoints
+    .map((point) => kotlinPoseExpression(point, options))
+    .join(",\n                ");
+
+  const curveType =
+    line.controlPoints.length === 0 ? "BezierLine" : "BezierCurve";
+  const allPoints = controlPoints
+    ? `${startExpression},\n                ${controlPoints},\n                ${kotlinPoseExpression(line.endPoint, options)}`
+    : `${startExpression},\n                ${kotlinPoseExpression(line.endPoint, options)}`;
+
+  const headingConfig =
+    line.endPoint.heading === "constant"
+      ? `Math.toRadians(${formatKotlinNumber(line.endPoint.degrees, 0)})`
+      : line.endPoint.heading === "linear"
+        ? `Math.toRadians(${formatKotlinNumber(line.endPoint.startDeg, 0)}), Math.toRadians(${formatKotlinNumber(line.endPoint.endDeg, 0)})`
+        : "";
+
+  const reverseConfig = line.endPoint.reverse
+    ? "\n            .setReversed()"
+    : "";
+
+  return `.addPath(
+            ${curveType}(
+                ${allPoints}
+            )
+        )
+        .${headingTypeToFunctionName[line.endPoint.heading]}(${headingConfig})${reverseConfig}`;
+}
+
+export function generateKotlinCode(
+  startPoint: Point,
+  lines: Line[],
+  exportMode: "full" | "class" | "coordinates" = "class",
+  pathChains: PathChain[] = [],
+  options: KotlinExportOptions = {},
+): string {
+  const linesWithIds = lines.map((line, idx) => ({
+    ...line,
+    id: line.id || `line-${idx + 1}`,
+  }));
+  const lineById = new Map(linesWithIds.map((line) => [line.id!, line]));
+
+  const inputChains =
+    pathChains.length > 0
+      ? pathChains
+      : linesWithIds.map((line, idx) => ({
+          id: line.id!,
+          name: line.name || `Path ${idx + 1}`,
+          color: "#38bdf8",
+          lineIds: [line.id!],
+        }));
+
+  const normalizedChains: PathChain[] = inputChains
+    .map((chain, idx) => ({
+      ...chain,
+      id: chain.id || `chain-${idx + 1}`,
+      name: chain.name || `PathChain${idx + 1}`,
+      lineIds: (chain.lineIds || []).filter((id) => lineById.has(id)),
+    }))
+    .filter((chain) => chain.lineIds.length > 0);
+
+  const pathAssignments = normalizedChains
+    .map((chain, chainIdx) => {
+      const variableName = sanitizeKotlinIdentifier(
+        chain.name,
+        `pathChain${chainIdx + 1}`,
+      );
+      const segmentSnippets = chain.lineIds
+        .map((lineId) => {
+          const line = lineById.get(lineId);
+          if (!line) return null;
+
+          const lineIndex = linesWithIds.findIndex((ln) => ln.id === line.id);
+          const startExpression =
+            lineIndex <= 0
+              ? kotlinPoseExpression(startPoint, options)
+              : kotlinPoseExpression(
+                  linesWithIds[lineIndex - 1].endPoint,
+                  options,
+                );
+
+          return buildKotlinPathSegmentCode(line, startExpression, options);
+        })
+        .filter((segment): segment is string => Boolean(segment));
+
+      return `val ${variableName}: PathChain = follower.pathBuilder()
+        ${segmentSnippets.join("\n        ")}
+        .build()`;
+    })
+    .join("\n\n        ");
+
+  if (exportMode === "coordinates") {
+    return pathAssignments;
+  }
+
+  const pathsClass = `inner class Paths {
+        ${pathAssignments}
+    }`;
+
+  if (exportMode === "class") {
+    return pathsClass;
+  }
+
+  const className = sanitizeKotlinClassName(
+    options.className,
+    "GeneratedPedroAuto",
+  );
+  const opModeName = options.opModeName || "Generated Pedro Auto";
+  const packageName =
+    options.packageName || "org.firstinspires.ftc.teamcode.Auto.Generated";
+  const startPose = kotlinPoseExpression(
+    startPoint,
+    options,
+    pointHeadingDegrees(startPoint, "start"),
+  );
+  const followCommands = normalizedChains
+    .map((chain, idx) => {
+      const variableName = sanitizeKotlinIdentifier(
+        chain.name,
+        `pathChain${idx + 1}`,
+      );
+      return `FollowPath(paths.${variableName})`;
+    })
+    .join(",\n            ");
+
+  return `package ${packageName}
+
+import com.pedropathing.geometry.BezierCurve
+import com.pedropathing.geometry.BezierLine
+import com.pedropathing.geometry.Pose
+import com.pedropathing.paths.PathChain
+import com.qualcomm.robotcore.eventloop.opmode.Autonomous
+import dev.nextftc.core.commands.groups.SequentialGroup
+import dev.nextftc.extensions.pedro.FollowPath
+import dev.nextftc.extensions.pedro.PedroComponent.Companion.follower
+import dev.nextftc.ftc.NextFTCOpMode
+import org.firstinspires.ftc.teamcode.Util.includePedro
+import org.firstinspires.ftc.teamcode.pedroPathing.Constants
+
+@Autonomous(name = "${opModeName}", group = "Generated")
+class ${className} : NextFTCOpMode() {
+    init {
+        includePedro(Constants::createFollower)
+    }
+
+    private lateinit var paths: Paths
+
+    override fun onStartButtonPressed() {
+        follower.setStartingPose(${startPose})
+        buildPaths()
+
+        SequentialGroup(
+            ${followCommands}
+        ).schedule()
+    }
+
+    fun buildPaths() {
+        paths = Paths()
+    }
+
+    ${pathsClass}
+}
+`;
 }
 
 /**

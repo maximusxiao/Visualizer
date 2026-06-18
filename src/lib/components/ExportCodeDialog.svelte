@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Point, Line, SequenceItem, PathChain } from "../../types";
   import Highlight from "svelte-highlight";
-  import { java } from "svelte-highlight/languages";
+  import { java, kotlin } from "svelte-highlight/languages";
   import plaintext from "svelte-highlight/languages/plaintext";
   import codeStyle from "svelte-highlight/styles/androidstudio";
   import { cubicInOut } from "svelte/easing";
@@ -9,6 +9,7 @@
   import { currentFilePath } from "../../stores";
   import {
     generateJavaCode,
+    generateKotlinCode,
     generatePointsArray,
     generateSequentialCommandCode,
   } from "../../utils/codeExporter";
@@ -20,10 +21,12 @@
   export let pathChains: PathChain[] = [];
 
   let exportMode: "full" | "class" | "coordinates" = "class";
-  let exportFormat: "java" | "points" | "sequential" = "java";
+  let exportFormat: "java" | "kotlin" | "points" | "sequential" = "java";
   let sequentialClassName = "AutoPath";
+  let kotlinClassName = "GeneratedPedroAuto";
+  let kotlinMirrorPoses = false;
   let exportedCode = "";
-  let currentLanguage: typeof java | typeof plaintext = java;
+  let currentLanguage: typeof java | typeof kotlin | typeof plaintext = java;
   let copied = false;
 
   // Update sequential class name when file changes
@@ -43,7 +46,7 @@
   }
 
   export async function openWithFormat(
-    format: "java" | "points" | "sequential",
+    format: "java" | "kotlin" | "points" | "sequential",
   ) {
     exportFormat = format;
 
@@ -56,6 +59,18 @@
           pathChains,
         );
         currentLanguage = java;
+      } else if (format === "kotlin") {
+        exportedCode = generateKotlinCode(
+          startPoint,
+          lines,
+          exportMode,
+          pathChains,
+          {
+            className: kotlinClassName,
+            mirrorPoses: kotlinMirrorPoses,
+          },
+        );
+        currentLanguage = kotlin;
       } else if (format === "points") {
         exportedCode = generatePointsArray(startPoint, lines);
         currentLanguage = plaintext;
@@ -107,9 +122,32 @@
     }
   }
 
+  function refreshKotlinCode() {
+    if (exportFormat === "kotlin" && isOpen) {
+      try {
+        exportedCode = generateKotlinCode(
+          startPoint,
+          lines,
+          exportMode,
+          pathChains,
+          {
+            className: kotlinClassName,
+            mirrorPoses: kotlinMirrorPoses,
+          },
+        );
+      } catch (error) {
+        console.error("Refresh failed:", error);
+        exportedCode =
+          "// Error refreshing code. Please check the console for details.";
+      }
+    }
+  }
+
   async function handleExportModeChange() {
     if (exportFormat === "java") {
       exportedCode = await generateJavaCode(startPoint, lines, exportMode, pathChains);
+    } else if (exportFormat === "kotlin") {
+      refreshKotlinCode();
     }
   }
 </script>
@@ -137,6 +175,8 @@
         <p class="text-sm font-light text-neutral-700 dark:text-neutral-400">
           {#if exportFormat === "java"}
             Here is the generated Java code for this path:
+          {:else if exportFormat === "kotlin"}
+            Here is the generated Kotlin code for this path:
           {:else if exportFormat === "points"}
             Here is the points array for this path:
           {:else if exportFormat === "sequential"}
@@ -144,7 +184,7 @@
           {/if}
         </p>
         <div class="flex items-center gap-2">
-          {#if exportFormat === "java"}
+          {#if exportFormat === "java" || exportFormat === "kotlin"}
             <label
               for="export-mode"
               class="text-sm font-light text-neutral-700 dark:text-neutral-400"
@@ -160,6 +200,32 @@
               <option value="class">Class Only</option>
               <option value="full">Full Code</option>
             </select>
+            {#if exportFormat === "kotlin"}
+              <label
+                for="kotlin-class-name"
+                class="text-sm font-light text-neutral-700 dark:text-neutral-400"
+                >Class:</label
+              >
+              <input
+                id="kotlin-class-name"
+                type="text"
+                bind:value={kotlinClassName}
+                on:input={refreshKotlinCode}
+                class="px-2 py-1 text-sm rounded-md bg-neutral-100 dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-600 focus:outline-none focus:ring-2 focus:ring-blue-500 w-40"
+                placeholder="GeneratedPedroAuto"
+              />
+              <label
+                class="flex items-center gap-1 text-sm font-light text-neutral-700 dark:text-neutral-400"
+                title="Add .mirror() to every Pose expression"
+              >
+                <input
+                  type="checkbox"
+                  bind:checked={kotlinMirrorPoses}
+                  on:change={refreshKotlinCode}
+                />
+                Mirror
+              </label>
+            {/if}
           {:else if exportFormat === "sequential"}
             <div class="flex items-center gap-2">
               <label

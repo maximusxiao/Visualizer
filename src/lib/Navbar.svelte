@@ -23,7 +23,9 @@
   import SettingsDialog from "./components/SettingsDialog.svelte";
   import ExportCodeDialog from "./components/ExportCodeDialog.svelte";
   import MultiplePathsDialog from "./components/MultiplePathsDialog.svelte";
+  import VideoCloneDialog from "./components/VideoCloneDialog.svelte";
   import { calculatePathTime, formatTime } from "../utils";
+  import type { VideoClonePath } from "../utils/videoPathCloner";
   import html2canvas from "html2canvas";
 
   export let loadFile: (evt: any) => any;
@@ -63,6 +65,7 @@
   let exportDialogOpen = false;
   let exportDialog: ExportCodeDialog;
   let multiplePathsDialogOpen = false;
+  let videoCloneDialogOpen = false;
   // Hide sequential export UI by default; backend generator remains available
   const showSequentialExport = false;
 
@@ -121,10 +124,19 @@
     }
   }
 
-  function handleExport(format: "java" | "points" | "sequential") {
+  function handleExport(format: "java" | "kotlin" | "points" | "sequential") {
     exportMenuOpen = false;
     fileManagerOpen = false; // ensure file manager is closed before opening export dialog
     exportDialog.openWithFormat(format);
+  }
+
+  function applyVideoClone(result: VideoClonePath) {
+    startPoint = result.startPoint;
+    lines = result.lines;
+    sequence = result.sequence;
+    pathChains = result.pathChains;
+    isUnsaved.set(true);
+    recordChange?.();
   }
 
   async function exportFieldAsImage() {
@@ -293,6 +305,8 @@
   bind:sequence
   bind:pathChains
 />
+
+<VideoCloneDialog bind:isOpen={videoCloneDialogOpen} onApply={applyVideoClone} />
 
 <SettingsDialog bind:isOpen={settingsOpen} bind:settings />
 
@@ -649,6 +663,30 @@
       </div>
     </button>
 
+    <button
+      title="Clone auto from video footage"
+      on:click={() => (videoCloneDialogOpen = true)}
+      class="relative px-3 py-1.5 rounded-lg font-medium text-sm transition-all duration-200 shadow-sm hover:shadow-md bg-neutral-200 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-200 hover:bg-neutral-300 dark:hover:bg-neutral-600"
+    >
+      <div class="flex items-center gap-1.5">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke-width="2"
+          stroke="currentColor"
+          class="size-5"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            d="m15.75 10.5 4.72-4.72a.75.75 0 0 1 1.28.53v11.38a.75.75 0 0 1-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 0 0 2.25-2.25v-9A2.25 2.25 0 0 0 13.5 5.25h-9A2.25 2.25 0 0 0 2.25 7.5v9a2.25 2.25 0 0 0 2.25 2.25Z"
+          />
+        </svg>
+        <span>Clone Auto</span>
+      </div>
+    </button>
+
     <!-- Divider -->
     <div
       class="h-6 border-l border-neutral-300 dark:border-neutral-700 mx-4"
@@ -849,6 +887,12 @@
               class="block w-full text-left px-4 py-2 text-sm text-neutral-700 dark:text-neutral-200 transition-colors duration-250"
             >
               Java Code
+            </button>
+            <button
+              on:click={() => handleExport("kotlin")}
+              class="block w-full text-left px-4 py-2 text-sm text-neutral-700 dark:text-neutral-200 transition-colors duration-250"
+            >
+              Kotlin Code
             </button>
             <button
               on:click={() => handleExport("points")}
