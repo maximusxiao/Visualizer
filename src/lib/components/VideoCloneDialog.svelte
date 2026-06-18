@@ -46,7 +46,9 @@
   const clamp = (value: number, min: number, max: number) =>
     Math.max(min, Math.min(max, value));
 
-  $: canTrace = Boolean(videoEl && duration > 0 && cornerPixels.length === 4 && targetColor);
+  $: canTrace = Boolean(
+    videoEl && duration > 0 && cornerPixels.length === 4 && targetColor,
+  );
   $: canImport = preparedPoints.length >= 2;
 
   onDestroy(() => {
@@ -419,7 +421,7 @@
     aria-label="Clone auto from video"
   >
     <div
-      class="flex flex-col bg-white dark:bg-neutral-900 rounded-lg w-[min(96vw,1180px)] max-h-[92vh] shadow-xl border border-neutral-200 dark:border-neutral-700 overflow-hidden"
+      class="flex h-[min(94vh,980px)] w-[min(98vw,1500px)] flex-col overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
     >
       <div class="flex items-center justify-between px-4 py-3 border-b border-neutral-200 dark:border-neutral-700">
         <div class="flex flex-col">
@@ -446,13 +448,13 @@
         </button>
       </div>
 
-      <div class="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_21rem] gap-0 overflow-auto">
-        <div class="p-4 bg-neutral-100 dark:bg-neutral-950">
-          <div class="relative w-full rounded-md overflow-hidden border border-neutral-200 dark:border-neutral-700 bg-neutral-950">
+      <div class="grid min-h-0 flex-1 grid-cols-1 gap-0 overflow-hidden lg:grid-cols-[minmax(0,1fr)_21rem]">
+        <div class="min-h-0 overflow-auto bg-neutral-100 p-4 dark:bg-neutral-950">
+          <div class="relative flex min-h-[28rem] w-full items-center justify-center overflow-auto rounded-md border border-neutral-200 bg-neutral-950 p-2 dark:border-neutral-700">
             <canvas
               bind:this={canvasEl}
               on:click={handleCanvasClick}
-              class="block w-full max-h-[68vh] object-contain cursor-crosshair"
+              class="block h-auto max-h-[calc(94vh-8rem)] max-w-full cursor-crosshair"
             />
             <video
               bind:this={videoEl}
