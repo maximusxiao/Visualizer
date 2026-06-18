@@ -4,13 +4,17 @@
   import {
     applyHomography,
     buildVideoClonePath,
+    createTrackingTemplate,
     prepareTracePoints,
     samplePixelColor,
     solveHomography,
     trackColorCentroid,
+    trackTemplateCenter,
+    updateTrackingTemplate,
     type Homography,
     type PixelPoint,
     type RgbColor,
+    type TrackingTemplate,
     type TraceSample,
     type VideoClonePath,
   } from "../../utils/videoPathCloner";
@@ -33,16 +37,21 @@
   let cornerPixels: PixelPoint[] = [];
   let robotPixel: PixelPoint | null = null;
   let targetColor: RgbColor | null = null;
+  let robotTemplate: TrackingTemplate | null = null;
   let tracedSamples: TraceSample[] = [];
   let preparedPoints: BasePoint[] = [];
   let tracing = false;
   let statusText = "Load footage";
   let progressPercent = 0;
+  let trackingScore = 0;
 
   let frameStepMs = 160;
   let tolerance = 46;
   let searchRadius = 90;
   let minBlobPixels = 18;
+  let templateSize = 56;
+  let templateMatchPercent = 28;
+  let templateAdaptPercent = 8;
   let minPointDistance = 4;
   let simplifyDistance = 2.2;
   let maxPoints = 20;
@@ -52,7 +61,10 @@
     Math.max(min, Math.min(max, value));
 
   $: canTrace = Boolean(
-    videoEl && duration > 0 && cornerPixels.length === 4 && targetColor,
+    videoEl &&
+      duration > 0 &&
+      cornerPixels.length === 4 &&
+      (robotTemplate || targetColor),
   );
   $: canImport = preparedPoints.length >= 2;
   $: previewScale = Math.min(
@@ -88,8 +100,25 @@
     cornerPixels = [];
     robotPixel = null;
     targetColor = null;
+    robotTemplate = null;
+    trackingScore = 0;
     resetTrace();
     statusText = "Calibration cleared";
+  }
+
+  function refreshRobotTemplate() {
+    if (!canvasEl || !robotPixel) return;
+    const ctx = canvasEl.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return;
+    const imageData = ctx.getImageData(0, 0, canvasEl.width, canvasEl.height);
+    robotTemplate = createTrackingTemplate(imageData, robotPixel, {
+      size: templateSize,
+    });
+    targetColor = samplePixelColor(imageData, robotPixel);
+    trackingScore = 100;
+    resetTrace();
+    statusText = "Robot template updated";
+    drawFrame();
   }
 
   function getCanvasPoint(event: MouseEvent): PixelPoint | null {
@@ -152,9 +181,13 @@
       if (!ctx) return;
       const imageData = ctx.getImageData(0, 0, canvasEl.width, canvasEl.height);
       targetColor = samplePixelColor(imageData, point);
+      robotTemplate = createTrackingTemplate(imageData, point, {
+        size: templateSize,
+      });
       robotPixel = point;
+      trackingScore = 100;
       resetTrace();
-      statusText = "Robot color picked";
+      statusText = "Robot template picked";
       drawFrame();
       return;
     }
@@ -227,6 +260,17 @@
     ctx.restore();
   }
 
+  function drawTrackerBox(ctx: CanvasRenderingContext2D, point: PixelPoint) {
+    const boxSize = robotTemplate?.size || templateSize;
+    const half = boxSize / 2;
+    ctx.save();
+    ctx.strokeStyle = "#fb7185";
+    ctx.lineWidth = 3;
+    ctx.setLineDash([8, 6]);
+    ctx.strokeRect(point.x - half, point.y - half, boxSize, boxSize);
+    ctx.restore();
+  }
+
   function drawFrame() {
     if (!canvasEl) return;
     const ctx = canvasEl.getContext("2d", { willReadFrequently: true });
@@ -277,6 +321,7 @@
     });
 
     if (robotPixel) {
+      drawTrackerBox(ctx, robotPixel);
       drawPoint(ctx, robotPixel, "R", "#fb7185");
     }
   }
@@ -295,6 +340,8 @@
     cornerPixels = [];
     robotPixel = null;
     targetColor = null;
+    robotTemplate = null;
+    trackingScore = 0;
     tracedSamples = [];
     preparedPoints = [];
     statusText = "Loading video";
@@ -354,7 +401,9 @@
   }
 
   async function traceVideo() {
-    if (!videoEl || !canvasEl || !targetColor || tracing) return;
+    if (!videoEl || !canvasEl || (!robotTemplate && !targetColor) || tracing) {
+      return;
+    }
     const h = currentHomography();
     if (!h) return;
 
@@ -371,6 +420,7 @@
     const samples: TraceSample[] = [];
     const restoreTime = currentTime;
     let lastPixel = robotPixel;
+    let activeTemplate = robotTemplate;
     const secondsPerFrame = Math.max(0.03, frameStepMs / 1000);
     const frameCount = Math.max(1, Math.ceil(duration / secondsPerFrame));
 
@@ -382,13 +432,36 @@
 
         ctx.drawImage(videoEl, 0, 0, scratch.width, scratch.height);
         const imageData = ctx.getImageData(0, 0, scratch.width, scratch.height);
-        let centroid = trackColorCentroid(imageData, targetColor, lastPixel, {
-          tolerance,
-          minBlobPixels,
-          searchRadius,
-        });
+        let centroid: PixelPoint | null = null;
+        const templateMatch =
+          activeTemplate && lastPixel
+            ? trackTemplateCenter(imageData, activeTemplate, lastPixel, {
+                searchRadius,
+                minScore: templateMatchPercent / 100,
+              })
+            : null;
 
-        if (!centroid && lastPixel) {
+        if (templateMatch) {
+          centroid = templateMatch.point;
+          activeTemplate = updateTrackingTemplate(
+            activeTemplate!,
+            imageData,
+            centroid,
+            templateAdaptPercent / 100,
+          );
+          trackingScore = Math.round(templateMatch.score * 100);
+        }
+
+        if (!centroid && targetColor) {
+          centroid = trackColorCentroid(imageData, targetColor, lastPixel, {
+            tolerance,
+            minBlobPixels,
+            searchRadius,
+          });
+          trackingScore = centroid ? 0 : trackingScore;
+        }
+
+        if (!centroid && lastPixel && targetColor) {
           centroid = trackColorCentroid(imageData, targetColor, null, {
             tolerance,
             minBlobPixels,
@@ -414,6 +487,7 @@
 
       tracedSamples = samples;
       preparedPoints = prepareCurrentPoints();
+      robotTemplate = activeTemplate;
       statusText = `${preparedPoints.length} path points`;
       await seekTo(restoreTime);
       drawFrame();
@@ -555,7 +629,9 @@
           <div class="rounded-md border border-neutral-200 dark:border-neutral-700 p-3 flex flex-col gap-3">
             <div class="flex items-center justify-between text-xs text-neutral-500 dark:text-neutral-400">
               <span>{cornerPixels.length}/4 corners</span>
-              <span>{targetColor ? "color picked" : "no color"}</span>
+              <span>
+                {robotTemplate ? "template picked" : targetColor ? "color fallback" : "no robot"}
+              </span>
             </div>
             <div class="flex items-center gap-2 text-xs">
               <span class="text-neutral-500 dark:text-neutral-400">Order</span>
@@ -570,13 +646,19 @@
                 </span>
               {/each}
             </div>
+            {#if robotTemplate}
+              <div class="flex items-center justify-between text-xs text-neutral-500 dark:text-neutral-400">
+                <span>Template {robotTemplate.size}px</span>
+                <span>{trackingScore}% match</span>
+              </div>
+            {/if}
             {#if targetColor}
               <div class="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
                 <span
                   class="size-5 rounded border border-neutral-300"
                   style="background-color: rgb({targetColor.r}, {targetColor.g}, {targetColor.b})"
                 />
-                <span>rgb({targetColor.r}, {targetColor.g}, {targetColor.b})</span>
+                <span>fallback rgb({targetColor.r}, {targetColor.g}, {targetColor.b})</span>
               </div>
             {/if}
           </div>
@@ -613,7 +695,49 @@
               />
             </label>
             <label class="flex flex-col gap-1 text-xs text-neutral-500 dark:text-neutral-400">
-              Tolerance
+              Template px
+              <input
+                type="number"
+                min="24"
+                max="140"
+                step="2"
+                bind:value={templateSize}
+                on:change={refreshRobotTemplate}
+                class="px-2 py-1 rounded border border-neutral-300 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-950 text-sm"
+              />
+            </label>
+            <label class="flex flex-col gap-1 text-xs text-neutral-500 dark:text-neutral-400">
+              Match %
+              <input
+                type="number"
+                min="10"
+                max="90"
+                bind:value={templateMatchPercent}
+                class="px-2 py-1 rounded border border-neutral-300 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-950 text-sm"
+              />
+            </label>
+            <label class="flex flex-col gap-1 text-xs text-neutral-500 dark:text-neutral-400">
+              Search px
+              <input
+                type="number"
+                min="0"
+                max="500"
+                bind:value={searchRadius}
+                class="px-2 py-1 rounded border border-neutral-300 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-950 text-sm"
+              />
+            </label>
+            <label class="flex flex-col gap-1 text-xs text-neutral-500 dark:text-neutral-400">
+              Adapt %
+              <input
+                type="number"
+                min="0"
+                max="35"
+                bind:value={templateAdaptPercent}
+                class="px-2 py-1 rounded border border-neutral-300 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-950 text-sm"
+              />
+            </label>
+            <label class="flex flex-col gap-1 text-xs text-neutral-500 dark:text-neutral-400">
+              RGB tol
               <input
                 type="number"
                 min="5"
@@ -623,17 +747,7 @@
               />
             </label>
             <label class="flex flex-col gap-1 text-xs text-neutral-500 dark:text-neutral-400">
-              Search px
-              <input
-                type="number"
-                min="0"
-                max="400"
-                bind:value={searchRadius}
-                class="px-2 py-1 rounded border border-neutral-300 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-950 text-sm"
-              />
-            </label>
-            <label class="flex flex-col gap-1 text-xs text-neutral-500 dark:text-neutral-400">
-              Blob px
+              RGB blob
               <input
                 type="number"
                 min="1"

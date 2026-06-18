@@ -18,6 +18,34 @@ export interface TraceSettings {
   searchRadius: number;
 }
 
+export interface TrackingTemplateSample {
+  dx: number;
+  dy: number;
+  lumaDev: number;
+  redGreen: number;
+  blueLuma: number;
+}
+
+export interface TrackingTemplate {
+  size: number;
+  halfSize: number;
+  sampleStep: number;
+  samples: TrackingTemplateSample[];
+  lumaSq: number;
+}
+
+export interface TemplateTraceSettings {
+  searchRadius: number;
+  searchStep?: number;
+  minScore?: number;
+  colorWeight?: number;
+}
+
+export interface TemplateTrackResult {
+  point: PixelPoint;
+  score: number;
+}
+
 export interface TraceSample {
   time: number;
   pixel: PixelPoint;
@@ -154,6 +182,263 @@ export function samplePixelColor(
     r: imageData.data[idx],
     g: imageData.data[idx + 1],
     b: imageData.data[idx + 2],
+  };
+}
+
+function pixelIndex(imageData: ImageData, x: number, y: number) {
+  const px = clamp(Math.round(x), 0, imageData.width - 1);
+  const py = clamp(Math.round(y), 0, imageData.height - 1);
+  return (py * imageData.width + px) * 4;
+}
+
+function sampleLuma(imageData: ImageData, x: number, y: number) {
+  const idx = pixelIndex(imageData, x, y);
+  return (
+    imageData.data[idx] * 0.299 +
+    imageData.data[idx + 1] * 0.587 +
+    imageData.data[idx + 2] * 0.114
+  );
+}
+
+function sampleTemplateFeatures(imageData: ImageData, x: number, y: number) {
+  const idx = pixelIndex(imageData, x, y);
+  const r = imageData.data[idx];
+  const g = imageData.data[idx + 1];
+  const b = imageData.data[idx + 2];
+  const luma = r * 0.299 + g * 0.587 + b * 0.114;
+
+  return {
+    luma,
+    redGreen: r - g,
+    blueLuma: b - luma,
+  };
+}
+
+function makeTemplateFromSamples(
+  size: number,
+  sampleStep: number,
+  rawSamples: Array<Omit<TrackingTemplateSample, "lumaDev"> & { luma: number }>,
+): TrackingTemplate {
+  const meanLuma =
+    rawSamples.reduce((sum, sample) => sum + sample.luma, 0) /
+    Math.max(1, rawSamples.length);
+
+  const samples = rawSamples.map((sample) => ({
+    dx: sample.dx,
+    dy: sample.dy,
+    lumaDev: sample.luma - meanLuma,
+    redGreen: sample.redGreen,
+    blueLuma: sample.blueLuma,
+  }));
+
+  const lumaSq = samples.reduce(
+    (sum, sample) => sum + sample.lumaDev * sample.lumaDev,
+    0,
+  );
+
+  return {
+    size,
+    halfSize: size / 2,
+    sampleStep,
+    samples,
+    lumaSq,
+  };
+}
+
+export function createTrackingTemplate(
+  imageData: ImageData,
+  point: PixelPoint,
+  options: { size?: number; sampleStep?: number } = {},
+): TrackingTemplate {
+  const size = clamp(Math.round(options.size || 56), 24, 140);
+  const halfSize = size / 2;
+  const sampleStep = clamp(
+    Math.round(options.sampleStep || Math.max(3, size / 16)),
+    3,
+    8,
+  );
+  const rawSamples: Array<
+    Omit<TrackingTemplateSample, "lumaDev"> & { luma: number }
+  > = [];
+
+  for (let dy = -halfSize; dy <= halfSize; dy += sampleStep) {
+    for (let dx = -halfSize; dx <= halfSize; dx += sampleStep) {
+      rawSamples.push({
+        dx,
+        dy,
+        ...sampleTemplateFeatures(imageData, point.x + dx, point.y + dy),
+      });
+    }
+  }
+
+  return makeTemplateFromSamples(size, sampleStep, rawSamples);
+}
+
+function scoreTemplateAt(
+  imageData: ImageData,
+  template: TrackingTemplate,
+  x: number,
+  y: number,
+  settings: Required<Pick<TemplateTraceSettings, "colorWeight">>,
+) {
+  if (template.samples.length === 0 || template.lumaSq < 1) return -Infinity;
+
+  let meanLuma = 0;
+  template.samples.forEach((sample) => {
+    meanLuma += sampleLuma(imageData, x + sample.dx, y + sample.dy);
+  });
+  meanLuma /= template.samples.length;
+
+  let numerator = 0;
+  let candidateSq = 0;
+  let chromaError = 0;
+
+  template.samples.forEach((sample) => {
+    const features = sampleTemplateFeatures(
+      imageData,
+      x + sample.dx,
+      y + sample.dy,
+    );
+    const lumaDev = features.luma - meanLuma;
+    numerator += sample.lumaDev * lumaDev;
+    candidateSq += lumaDev * lumaDev;
+    chromaError +=
+      Math.abs(features.redGreen - sample.redGreen) +
+      Math.abs(features.blueLuma - sample.blueLuma);
+  });
+
+  if (candidateSq < 1) return -Infinity;
+
+  const textureScore =
+    numerator / Math.sqrt(Math.max(1, template.lumaSq * candidateSq));
+  const chromaPenalty = clamp(
+    chromaError / Math.max(1, template.samples.length * 510),
+    0,
+    1,
+  );
+
+  return (textureScore + 1) / 2 - chromaPenalty * settings.colorWeight;
+}
+
+export function trackTemplateCenter(
+  imageData: ImageData,
+  template: TrackingTemplate,
+  previousPoint: PixelPoint,
+  settings: TemplateTraceSettings,
+): TemplateTrackResult | null {
+  const radius = Math.max(8, settings.searchRadius);
+  const coarseStep = clamp(Math.round(settings.searchStep || 4), 1, 12);
+  const minScore = settings.minScore ?? 0.28;
+  const weights = {
+    colorWeight: settings.colorWeight ?? 0.14,
+  };
+  const margin = template.halfSize + 1;
+  const minX = clamp(
+    previousPoint.x - radius,
+    margin,
+    imageData.width - margin,
+  );
+  const maxX = clamp(
+    previousPoint.x + radius,
+    margin,
+    imageData.width - margin,
+  );
+  const minY = clamp(
+    previousPoint.y - radius,
+    margin,
+    imageData.height - margin,
+  );
+  const maxY = clamp(
+    previousPoint.y + radius,
+    margin,
+    imageData.height - margin,
+  );
+
+  let bestPoint: PixelPoint | null = null;
+  let bestScore = -Infinity;
+
+  const consider = (x: number, y: number) => {
+    const distancePenalty =
+      (Math.hypot(x - previousPoint.x, y - previousPoint.y) / radius) * 0.035;
+    const score =
+      scoreTemplateAt(imageData, template, x, y, weights) - distancePenalty;
+    if (score > bestScore) {
+      bestScore = score;
+      bestPoint = { x, y };
+    }
+  };
+
+  for (let y = minY; y <= maxY; y += coarseStep) {
+    for (let x = minX; x <= maxX; x += coarseStep) {
+      consider(x, y);
+    }
+  }
+
+  if (bestPoint && coarseStep > 1) {
+    const refineMinX = clamp(
+      bestPoint.x - coarseStep,
+      margin,
+      imageData.width - margin,
+    );
+    const refineMaxX = clamp(
+      bestPoint.x + coarseStep,
+      margin,
+      imageData.width - margin,
+    );
+    const refineMinY = clamp(
+      bestPoint.y - coarseStep,
+      margin,
+      imageData.height - margin,
+    );
+    const refineMaxY = clamp(
+      bestPoint.y + coarseStep,
+      margin,
+      imageData.height - margin,
+    );
+
+    for (let y = refineMinY; y <= refineMaxY; y += 1) {
+      for (let x = refineMinX; x <= refineMaxX; x += 1) {
+        consider(x, y);
+      }
+    }
+  }
+
+  if (!bestPoint || bestScore < minScore) return null;
+  return {
+    point: bestPoint,
+    score: bestScore,
+  };
+}
+
+export function updateTrackingTemplate(
+  template: TrackingTemplate,
+  imageData: ImageData,
+  point: PixelPoint,
+  adaptRate = 0.08,
+): TrackingTemplate {
+  const next = createTrackingTemplate(imageData, point, {
+    size: template.size,
+    sampleStep: template.sampleStep,
+  });
+  const rate = clamp(adaptRate, 0, 0.35);
+  const samples = template.samples.map((sample, idx) => {
+    const fresh = next.samples[idx] || sample;
+    return {
+      dx: sample.dx,
+      dy: sample.dy,
+      lumaDev: sample.lumaDev * (1 - rate) + fresh.lumaDev * rate,
+      redGreen: sample.redGreen * (1 - rate) + fresh.redGreen * rate,
+      blueLuma: sample.blueLuma * (1 - rate) + fresh.blueLuma * rate,
+    };
+  });
+
+  return {
+    ...template,
+    samples,
+    lumaSq: samples.reduce(
+      (sum, sample) => sum + sample.lumaDev * sample.lumaDev,
+      0,
+    ),
   };
 }
 
