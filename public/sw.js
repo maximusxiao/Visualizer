@@ -1,4 +1,4 @@
-const VERSION = "v6";
+const VERSION = "v7";
 const CACHE_NAME = `pedro-visualizer-${VERSION}`;
 
 const APP_STATIC_RESOURCES = [
@@ -16,17 +16,18 @@ const APP_STATIC_RESOURCES = [
   "./fonts/Poppins-ExtraLight.ttf",
 ];
 
-// On install, cache the static resources
+// On install, cache the static resources and activate this worker immediately.
 self.addEventListener("install", (event) => {
   event.waitUntil(
     (async () => {
       const cache = await caches.open(CACHE_NAME);
-      cache.addAll(APP_STATIC_RESOURCES);
+      await cache.addAll(APP_STATIC_RESOURCES);
+      await self.skipWaiting();
     })(),
   );
 });
 
-// delete old caches on activate
+// Delete old caches on activate and take over existing tabs.
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
@@ -40,38 +41,46 @@ self.addEventListener("activate", (event) => {
         }),
       );
       await clients.claim();
+
+      const windowClients = await clients.matchAll({
+        type: "window",
+        includeUncontrolled: true,
+      });
+      await Promise.all(
+        windowClients.map((client) => {
+          if ("navigate" in client) {
+            return client.navigate(client.url);
+          }
+          return undefined;
+        }),
+      );
     })(),
   );
 });
 
-// On fetch, intercept server requests
-// and respond with cached responses instead of going to network
+// Prefer fresh network responses; use cache only as a fallback.
 self.addEventListener("fetch", (event) => {
-  // As a single page app, direct app to always go to cached home page.
-  // if (event.request.mode === "navigate") {
-  //   event.respondWith(caches.match("/"));
-  //   return;
-  // }
+  if (event.request.method !== "GET") return;
 
-  // For all other requests, go to the cache first, and then the network.
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE_NAME);
-      const cachedResponse = await cache.match(event.request);
-      if (cachedResponse) {
-        // Return the cached response if it's available.
-        return cachedResponse;
-      }
-      // Try network if not in cache
+
       try {
         const networkResponse = await fetch(event.request);
-        // Cache successful responses for future use
         if (networkResponse.ok) {
-          cache.put(event.request, networkResponse.clone());
+          await cache.put(event.request, networkResponse.clone());
         }
         return networkResponse;
       } catch (error) {
-        // If both cache and network fail, return a 404.
+        const cachedResponse = await cache.match(event.request);
+        if (cachedResponse) return cachedResponse;
+
+        if (event.request.mode === "navigate") {
+          const appShell = await cache.match("./");
+          if (appShell) return appShell;
+        }
+
         return new Response(null, { status: 404 });
       }
     })(),
