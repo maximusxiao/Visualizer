@@ -41,16 +41,24 @@ export interface TrackingTemplate {
 }
 
 export interface TemplateTraceSettings {
+  candidateFilter?: (point: PixelPoint) => boolean;
   searchRadius: number;
   searchStep?: number;
   minScore?: number;
   colorWeight?: number;
-  candidateFilter?: (point: PixelPoint) => boolean;
+  motionWeight?: number;
+  previousImageData?: ImageData | null;
 }
 
 export interface TemplateTrackResult {
   point: PixelPoint;
   score: number;
+}
+
+interface TemplateBackground {
+  blueLuma: number;
+  luma: number;
+  redGreen: number;
 }
 
 export interface TraceSample {
@@ -238,6 +246,7 @@ function makeTemplateFromSamples(
       luma: number;
     }
   >,
+  background?: TemplateBackground,
 ): TrackingTemplate {
   const meanLuma =
     rawSamples.reduce((sum, sample) => sum + sample.luma, 0) /
@@ -247,8 +256,16 @@ function makeTemplateFromSamples(
     .map((sample) => {
       const lumaDev = sample.luma - meanLuma;
       const chroma = Math.hypot(sample.redGreen, sample.blueLuma);
+      const backgroundDiff = background
+        ? Math.abs(sample.luma - background.luma) +
+          Math.abs(sample.redGreen - background.redGreen) +
+          Math.abs(sample.blueLuma - background.blueLuma)
+        : 0;
       const distinctiveness =
-        sample.edge / 42 + Math.abs(lumaDev) / 36 + chroma / 100;
+        sample.edge / 42 +
+        Math.abs(lumaDev) / 36 +
+        chroma / 120 +
+        backgroundDiff / 90;
 
       return {
         dx: sample.dx,
@@ -291,7 +308,13 @@ function makeTemplateFromSamples(
 export function createTrackingTemplate(
   imageData: ImageData,
   point: PixelPoint,
-  options: { size?: number; width?: number; height?: number; sampleStep?: number } = {},
+  options: {
+    background?: TemplateBackground;
+    height?: number;
+    sampleStep?: number;
+    size?: number;
+    width?: number;
+  } = {},
 ): TrackingTemplate {
   const width = clamp(
     Math.round(options.width || options.size || 56),
@@ -331,7 +354,13 @@ export function createTrackingTemplate(
     }
   }
 
-  return makeTemplateFromSamples(width, height, sampleStep, rawSamples);
+  return makeTemplateFromSamples(
+    width,
+    height,
+    sampleStep,
+    rawSamples,
+    options.background,
+  );
 }
 
 export function createTrackingTemplateFromBox(
@@ -361,14 +390,61 @@ export function createTrackingTemplateFromBox(
     x: left + width / 2,
     y: top + height / 2,
   };
+  const background = sampleBackgroundRing(imageData, {
+    height,
+    width,
+    x: left,
+    y: top,
+  });
 
   return {
     point,
     template: createTrackingTemplate(imageData, point, {
+      background,
       width,
       height,
       sampleStep: options.sampleStep,
     }),
+  };
+}
+
+function sampleBackgroundRing(
+  imageData: ImageData,
+  box: { x: number; y: number; width: number; height: number },
+): TemplateBackground | undefined {
+  const ring = clamp(Math.round(Math.max(box.width, box.height) * 0.18), 8, 28);
+  const step = clamp(Math.round(Math.max(box.width, box.height) / 18), 3, 10);
+  let count = 0;
+  let luma = 0;
+  let redGreen = 0;
+  let blueLuma = 0;
+
+  const sample = (x: number, y: number) => {
+    if (x < 0 || y < 0 || x >= imageData.width || y >= imageData.height) {
+      return;
+    }
+    const features = sampleTemplateFeatures(imageData, x, y);
+    count++;
+    luma += features.luma;
+    redGreen += features.redGreen;
+    blueLuma += features.blueLuma;
+  };
+
+  for (let x = box.x - ring; x <= box.x + box.width + ring; x += step) {
+    sample(x, box.y - ring);
+    sample(x, box.y + box.height + ring);
+  }
+
+  for (let y = box.y - ring; y <= box.y + box.height + ring; y += step) {
+    sample(box.x - ring, y);
+    sample(box.x + box.width + ring, y);
+  }
+
+  if (count < 8) return undefined;
+  return {
+    blueLuma: blueLuma / count,
+    luma: luma / count,
+    redGreen: redGreen / count,
   };
 }
 
@@ -377,7 +453,8 @@ function scoreTemplateAt(
   template: TrackingTemplate,
   x: number,
   y: number,
-  settings: Required<Pick<TemplateTraceSettings, "colorWeight">>,
+  settings: Required<Pick<TemplateTraceSettings, "colorWeight" | "motionWeight">> &
+    Pick<TemplateTraceSettings, "previousImageData">,
 ) {
   if (
     template.samples.length === 0 ||
@@ -397,6 +474,7 @@ function scoreTemplateAt(
   let numerator = 0;
   let candidateSq = 0;
   let chromaError = 0;
+  let motion = 0;
 
   template.samples.forEach((sample) => {
     const features = sampleTemplateFeatures(
@@ -411,6 +489,15 @@ function scoreTemplateAt(
       sample.weight *
       (Math.abs(features.redGreen - sample.redGreen) +
         Math.abs(features.blueLuma - sample.blueLuma));
+
+    if (settings.previousImageData) {
+      motion +=
+        sample.weight *
+        Math.abs(
+          features.luma -
+            sampleLuma(settings.previousImageData, x + sample.dx, y + sample.dy),
+        );
+    }
   });
 
   if (candidateSq < 1) return -Infinity;
@@ -422,8 +509,13 @@ function scoreTemplateAt(
     0,
     1,
   );
+  const motionScore = clamp(motion / Math.max(1, template.totalWeight * 55), 0, 1);
 
-  return (textureScore + 1) / 2 - chromaPenalty * settings.colorWeight;
+  return (
+    (textureScore + 1) / 2 -
+    chromaPenalty * settings.colorWeight +
+    motionScore * settings.motionWeight
+  );
 }
 
 export function trackTemplateCenter(
@@ -437,6 +529,8 @@ export function trackTemplateCenter(
   const minScore = settings.minScore ?? 0.28;
   const weights = {
     colorWeight: settings.colorWeight ?? 0.14,
+    motionWeight: settings.motionWeight ?? 0.28,
+    previousImageData: settings.previousImageData ?? null,
   };
   const marginX = template.halfWidth + 1;
   const marginY = template.halfHeight + 1;

@@ -292,6 +292,31 @@
     return inside;
   }
 
+  function robotBoxMostlyInField(point: PixelPoint, template: TrackingTemplate) {
+    const corners = [
+      {
+        x: point.x - template.halfWidth,
+        y: point.y - template.halfHeight,
+      },
+      {
+        x: point.x + template.halfWidth,
+        y: point.y - template.halfHeight,
+      },
+      {
+        x: point.x + template.halfWidth,
+        y: point.y + template.halfHeight,
+      },
+      {
+        x: point.x - template.halfWidth,
+        y: point.y + template.halfHeight,
+      },
+    ];
+    const insideCorners = corners.filter((corner) =>
+      pointInPolygon(corner, cornerPixels),
+    ).length;
+    return pointInPolygon(point, cornerPixels) && insideCorners >= 2;
+  }
+
   function drawPoint(
     ctx: CanvasRenderingContext2D,
     point: PixelPoint,
@@ -513,6 +538,7 @@
     let lastPixel = robotPixel;
     let velocity = { x: 0, y: 0 };
     let activeTemplate = robotTemplate;
+    let previousImageData: ImageData | null = null;
     const secondsPerFrame = Math.max(0.03, frameStepMs / 1000);
     const frameCount = Math.max(1, Math.ceil(duration / secondsPerFrame));
 
@@ -536,8 +562,10 @@
             ? trackTemplateCenter(imageData, activeTemplate, predictedPixel, {
                 searchRadius,
                 minScore: templateMatchPercent / 100,
+                motionWeight: 0.32,
+                previousImageData,
                 candidateFilter: (candidate) =>
-                  pointInPolygon(candidate, cornerPixels),
+                  robotBoxMostlyInField(candidate, activeTemplate!),
               })
             : null;
 
@@ -589,6 +617,8 @@
           statusText = `Tracing ${progressPercent}%`;
           await tick();
         }
+
+        previousImageData = imageData;
       }
 
       tracedSamples = samples;
